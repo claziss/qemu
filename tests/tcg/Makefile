@@ -151,6 +151,9 @@ test-cris:
 test-lm32:
 	$(MAKE) -C lm32 check
 
+test-arc:
+	$(MAKE) -C arc check
+
 clean:
 	rm -f *~ *.o test-i386.out test-i386.ref \
            test-x86_64.log test-x86_64.ref qruncom $(TESTS)
