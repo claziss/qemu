@@ -15,7 +15,7 @@
  *
  *  You should have received a copy of the GNU Lesser General Public
  *  License along with this library; if not, see
- *  <<a  rel="nofollow" href="http://www.gnu.org/licenses/lgpl-2.1.html">http://www.gnu.org/licenses/lgpl-2.1.html</a>>
+ *  http://www.gnu.org/licenses/lgpl-2.1.html
  */
 
 /*
@@ -180,7 +180,7 @@ arc_gen_verifyFFlag(DisasCtxt *ctx)
 }
 #define getFFlag() arc_gen_verifyFFlag(ctx)
 
-TCGv 
+TCGv
 to_implement(DisasCtxt *ctx)
 {
   abort();
@@ -191,7 +191,7 @@ to_implement(DisasCtxt *ctx)
 #define killDelaySlot() to_implement(ctx)
 
 
-TCGv 
+TCGv
 to_implement_wo_abort(DisasCtxt *ctx)
 {
   return ctx->zero;
@@ -203,25 +203,25 @@ arc2_gen_set_memory (DisasCtxt *ctx, TCGv addr, int size, TCGv src, bool sign_ex
   switch (size)
     {
       case 0x00:
-        tcg_gen_qemu_st_tl(src, addr, ctx->memidx, MO_UL);
-        break;
+	tcg_gen_qemu_st_tl(src, addr, ctx->memidx, MO_UL);
+	break;
 
       case 0x01:
-        if (sign_extend)
-          tcg_gen_qemu_st_tl(src, addr, ctx->memidx, MO_SB);
-        else
-          tcg_gen_qemu_st_tl(src, addr, ctx->memidx, MO_UB);
-        break;
+	if (sign_extend)
+	  tcg_gen_qemu_st_tl(src, addr, ctx->memidx, MO_SB);
+	else
+	  tcg_gen_qemu_st_tl(src, addr, ctx->memidx, MO_UB);
+	break;
 
       case 0x02:
-        if (sign_extend)
-          tcg_gen_qemu_st_tl(src, addr, ctx->memidx, MO_SW);
-        else
-          tcg_gen_qemu_st_tl(src, addr, ctx->memidx, MO_UW);
-        break;
+	if (sign_extend)
+	  tcg_gen_qemu_st_tl(src, addr, ctx->memidx, MO_SW);
+	else
+	  tcg_gen_qemu_st_tl(src, addr, ctx->memidx, MO_UW);
+	break;
 
       case 0x03:
-        assert(!"reserved");
+	assert(!"reserved");
 	break;
     }
 }
@@ -235,25 +235,25 @@ arc2_gen_get_memory (DisasCtxt *ctx, TCGv addr, int size, bool sign_extend)
   switch (size)
     {
       case 0x00:
-        tcg_gen_qemu_ld_tl(dest, addr, ctx->memidx, MO_UL);
-        break;
+	tcg_gen_qemu_ld_tl(dest, addr, ctx->memidx, MO_UL);
+	break;
 
       case 0x01:
-        if (sign_extend)
-          tcg_gen_qemu_ld_tl(dest, addr, ctx->memidx, MO_SB);
-        else
-          tcg_gen_qemu_ld_tl(dest, addr, ctx->memidx, MO_UB);
-        break;
+	if (sign_extend)
+	  tcg_gen_qemu_ld_tl(dest, addr, ctx->memidx, MO_SB);
+	else
+	  tcg_gen_qemu_ld_tl(dest, addr, ctx->memidx, MO_UB);
+	break;
 
       case 0x02:
-        if (sign_extend)
-          tcg_gen_qemu_ld_tl(dest, addr, ctx->memidx, MO_SW);
-        else
-          tcg_gen_qemu_ld_tl(dest, addr, ctx->memidx, MO_UW);
-        break;
+	if (sign_extend)
+	  tcg_gen_qemu_ld_tl(dest, addr, ctx->memidx, MO_SW);
+	else
+	  tcg_gen_qemu_ld_tl(dest, addr, ctx->memidx, MO_UW);
+	break;
 
       case 0x03:
-        assert(!"reserved");
+	assert(!"reserved");
 	break;
     }
   return dest;
@@ -304,7 +304,7 @@ arc2_gen_set_debug(DisasCtxt *ctx, bool value)
 }
 #define setDebugLD(A) arc2_gen_set_debug(ctx, A)
 
-void 
+void
 arc2_gen_execute_delayslot(DisasCtxt *ctx)
 {
   static int in_delay_slot = false;
@@ -317,19 +317,18 @@ arc2_gen_execute_delayslot(DisasCtxt *ctx)
       uint32_t pcl = ctx->pcl;
       insn_t insn = ctx->insn;
       int bstate = ctx->bstate;
-  
+
       ctx->cpc = ctx->npc;
       ctx->pcl = ctx->cpc & 0xfffffffc;
-  
+
       ++ctx->ds;
-  
+
       /* TODO: check for illegal instruction sequence */
-  
-      memset(&ctx->opt, 0, sizeof(ctx->insn));
-      arc_decodeNew(ctx);
-  
+
+      arc_decode (ctx);
+
       --ctx->ds;
-  
+
       ctx->cpc = cpc;
       ctx->npc = npc;
       ctx->dpc = dpc;
@@ -397,7 +396,7 @@ arc2_gen_get_pcl(DisasCtxt *ctx)
 }
 #define getPCL() arc2_gen_get_pcl(ctx)
 
-void 
+void
 arc2_set_pc(DisasCtxt *ctx, TCGv new_pc)
 {
   tcg_gen_mov_i32(cpu_pc, new_pc);
