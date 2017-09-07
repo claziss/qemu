@@ -601,6 +601,7 @@ static inline void cpu_loop_exec_tb(CPUState *cpu, TranslationBlock *tb,
 
     /* Instruction counter expired.  */
     assert(use_icount);
+
 #ifndef CONFIG_USER_ONLY
     /* Ensure global icount has gone forward */
     cpu_update_icount(cpu);
