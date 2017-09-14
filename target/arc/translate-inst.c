@@ -90,7 +90,7 @@ arc_gen_verifyCCFlag(DisasCtxt *ctx)
 	tcg_gen_mov_tl(c1, cpu_Nf);
 	tcg_gen_and_tl(c1, c1, cpu_Vf);
 	tcg_gen_and_tl(c1, c1, nZ);
-	
+
 	tcg_gen_mov_tl(ret, nN);
 	tcg_gen_and_tl(ret, ret, nV);
 	tcg_gen_and_tl(ret, ret, nZ);
@@ -315,7 +315,6 @@ arc2_gen_execute_delayslot(DisasCtxt *ctx)
       uint32_t cpc = ctx->cpc;
       uint32_t pcl = ctx->pcl;
       insn_t insn = ctx->insn;
-      int bstate = ctx->bstate;
 
       ctx->cpc = ctx->npc;
       ctx->pcl = ctx->cpc & 0xfffffffc;
@@ -330,7 +329,7 @@ arc2_gen_execute_delayslot(DisasCtxt *ctx)
 
       --ctx->ds;
 
-      /* Make dpc(delay_slot next pc) become npc(next pc) of the delayslot 
+      /* Make dpc(delay_slot next pc) become npc(next pc) of the delayslot
        * instruction.  */
       ctx->dpc = ctx->npc;
 
@@ -363,14 +362,14 @@ TCGv arc2_gen_getNFlag(void)
   return cpu_Nf;
 }
 
-void 
+void
 arc2_gen_getCFlag(TCGv elem)
 {
   // TODO: Check type of elem and set sign bit accordingly.
   tcg_gen_mov_tl(cpu_Cf, elem);
 }
 
-void 
+void
 arc2_gen_getVFlag(TCGv elem)
 {
   // TODO: Check type of elem and set sign bit accordingly.
@@ -380,7 +379,9 @@ arc2_gen_getVFlag(TCGv elem)
 void
 arc2_gen_set_zflag(TCGv elem)
 {
-  tcg_gen_mov_tl(cpu_Zf, elem);
+  TCGv zero = tcg_const_local_i32 (0);
+  tcg_gen_setcond_i32 (TCG_COND_EQ, cpu_Zf, elem, zero);
+  tcg_temp_free_i32 (zero);
 }
 
 int
@@ -424,19 +425,19 @@ arc2_gen_get_pcl(DisasCtxt *ctx)
   return ret;
 }
 
-void 
+void
 arc2_set_pc(DisasCtxt *ctx, TCGv new_pc)
 {
-  gen_goto_tb(ctx, 1, new_pc); 
+  gen_goto_tb(ctx, 1, new_pc);
 }
 
-void 
+void
 arc2_set_blink(DisasCtxt *ctx, TCGv blink_addr)
 {
   tcg_gen_mov_i32(cpu_blink, blink_addr);
 }
 
-TCGv 
+TCGv
 arc2_gen_add_Cf(TCGv dest, TCGv src1, TCGv src2)
 {
     TCGv t1 = tcg_temp_new_i32();
@@ -459,7 +460,7 @@ arc2_gen_add_Cf(TCGv dest, TCGv src1, TCGv src2)
     return ret;
 }
 
-TCGv 
+TCGv
 arc2_gen_add_Vf(TCGv dest, TCGv src1, TCGv src2)
 {
     TCGv t1 = tcg_temp_new_i32();
@@ -483,28 +484,29 @@ arc2_gen_add_Vf(TCGv dest, TCGv src1, TCGv src2)
     return ret;
 }
 
-TCGv 
+/* dest = src1 - src2. Compute C, N, V and Z flags */
+TCGv
 arc2_gen_sub_Cf(TCGv dest, TCGv src1, TCGv src2)
 {
-    TCGv t1 = tcg_temp_local_new_i32();
-    TCGv t2 = tcg_temp_local_new_i32();
-    TCGv t3 = tcg_temp_local_new_i32();
-    TCGv ret = tcg_temp_new_i32();
+  TCGv t1 = tcg_temp_local_new_i32();
+  TCGv t2 = tcg_temp_local_new_i32();
+  TCGv t3 = tcg_temp_local_new_i32();
+  TCGv ret = tcg_temp_new_i32();
 
-    tcg_gen_not_tl(t1, src1);       /*  t1 = ~src1                          */
-    tcg_gen_and_tl(t2, t1, src2);   /*  t2 = ~src1 & src2                   */
-    tcg_gen_or_tl(t3, t1, src2);    /*  t3 = (~src1 | src2) & dest          */
-    tcg_gen_and_tl(t3, t3, dest);
-    tcg_gen_or_tl(t2, t2, t3);      /*  t2 = ~src1 & src2
-                                           | ~src1 & dest
-                                           | dest & src2                    */
-    tcg_gen_shri_tl(ret, t2, 31);/*  Cf = t2(31)                         */
+  tcg_gen_not_tl(t1, src1);       /*  t1 = ~src1                          */
+  tcg_gen_and_tl(t2, t1, src2);   /*  t2 = ~src1 & src2                   */
+  tcg_gen_or_tl(t3, t1, src2);    /*  t3 = (~src1 | src2) & dest          */
+  tcg_gen_and_tl(t3, t3, dest);
+  tcg_gen_or_tl(t2, t2, t3);      /*  t2 = ~src1 & src2
+                                      | ~src1 & dest
+                                      | dest & src2                    */
+  tcg_gen_shri_tl(ret, t2, 31);/*  Cf = t2(31)                         */
 
-    tcg_temp_free_i32(t3);
-    tcg_temp_free_i32(t2);
-    tcg_temp_free_i32(t1);
+  tcg_temp_free_i32(t3);
+  tcg_temp_free_i32(t2);
+  tcg_temp_free_i32(t1);
 
-    return ret;
+  return ret;
 }
 
 TCGv
@@ -515,9 +517,9 @@ arc2_gen_sub_Vf(TCGv dest, TCGv src1, TCGv src2)
     TCGv ret = tcg_temp_new_i32();
 
     /*
-        t1 = src1 & ~src2 & ~dest
-           | ~src1 & src2 & dest
-           = (src1 ^ dest) & (src1 ^ dest)*/
+	t1 = src1 & ~src2 & ~dest
+	   | ~src1 & src2 & dest
+	   = (src1 ^ dest) & (src1 ^ dest)*/
     tcg_gen_xor_tl(t1, src1, dest);
     tcg_gen_xor_tl(t2, src1, src2);
     tcg_gen_and_tl(t1, t1, t2);
@@ -570,11 +572,11 @@ arc2_gen_get_bit (TCGv a, TCGv pos)
   return ret;
 }
 
-TCGv 
+TCGv
 arc2_gen_get_aux_reg_index(enum arc_registers reg_id)
 {
   TCGv ret = tcg_temp_new_i32();
-  tcg_gen_movi_tl(ret, reg_id); 
+  tcg_gen_movi_tl(ret, reg_id);
   return ret;
 }
 
