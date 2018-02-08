@@ -333,17 +333,27 @@ update_map_file:
 
 static int fchmodat_nofollow(int dirfd, const char *name, mode_t mode)
 {
+    struct stat stbuf;
     int fd, ret;
 
     /* FIXME: this should be handled with fchmodat(AT_SYMLINK_NOFOLLOW).
-     * Unfortunately, the linux kernel doesn't implement it yet. As an
-     * alternative, let's open the file and use fchmod() instead. This
-     * may fail depending on the permissions of the file, but it is the
-     * best we can do to avoid TOCTTOU. We first try to open read-only
-     * in case name points to a directory. If that fails, we try write-only
-     * in case name doesn't point to a directory.
+     * Unfortunately, the linux kernel doesn't implement it yet.
      */
-    fd = openat_file(dirfd, name, O_RDONLY, 0);
+
+     /* First, we clear non-racing symlinks out of the way. */
+    if (fstatat(dirfd, name, &stbuf, AT_SYMLINK_NOFOLLOW)) {
+        return -1;
+    }
+    if (S_ISLNK(stbuf.st_mode)) {
+        errno = ELOOP;
+        return -1;
+    }
+
+    fd = openat_file(dirfd, name, O_RDONLY | O_PATH_9P_UTIL | O_NOFOLLOW, 0);
+#if O_PATH_9P_UTIL == 0
+    /* Fallback for systems that don't support O_PATH: we depend on the file
+     * being readable or writable.
+     */
     if (fd == -1) {
         /* In case the file is writable-only and isn't a directory. */
         if (errno == EACCES) {
@@ -357,6 +367,28 @@ static int fchmodat_nofollow(int dirfd, const char *name, mode_t mode)
         return -1;
     }
     ret = fchmod(fd, mode);
+#else
+    /* Access modes are ignored when O_PATH is supported. If name is a symbolic
+     * link, O_PATH | O_NOFOLLOW causes openat(2) to return a file descriptor
+     * referring to the symbolic link.
+     */
+    if (fd == -1) {
+        return -1;
+    }
+
+    /* Now we handle racing symlinks. */
+    ret = fstat(fd, &stbuf);
+    if (!ret) {
+        if (S_ISLNK(stbuf.st_mode)) {
+            errno = ELOOP;
+            ret = -1;
+        } else {
+            char *proc_path = g_strdup_printf("/proc/self/fd/%d", fd);
+            ret = chmod(proc_path, mode);
+            g_free(proc_path);
+        }
+    }
+#endif
     close_preserve_errno(fd);
     return ret;
 }
@@ -1368,13 +1400,14 @@ static int local_ioc_getversion(FsContext *ctx, V9fsPath *path,
 #endif
 }
 
-static int local_init(FsContext *ctx)
+static int local_init(FsContext *ctx, Error **errp)
 {
     struct statfs stbuf;
     LocalData *data = g_malloc(sizeof(*data));
 
     data->mountfd = open(ctx->fs_root, O_DIRECTORY | O_RDONLY);
     if (data->mountfd == -1) {
+        error_setg_errno(errp, errno, "failed to open '%s'", ctx->fs_root);
         goto err;
     }
 
@@ -1427,16 +1460,21 @@ static void local_cleanup(FsContext *ctx)
     g_free(data);
 }
 
-static int local_parse_opts(QemuOpts *opts, struct FsDriverEntry *fse)
+static void error_append_security_model_hint(Error **errp)
+{
+    error_append_hint(errp, "Valid options are: security_model="
+                      "[passthrough|mapped-xattr|mapped-file|none]\n");
+}
+
+static int local_parse_opts(QemuOpts *opts, FsDriverEntry *fse, Error **errp)
 {
     const char *sec_model = qemu_opt_get(opts, "security_model");
     const char *path = qemu_opt_get(opts, "path");
-    Error *err = NULL;
+    Error *local_err = NULL;
 
     if (!sec_model) {
-        error_report("Security model not specified, local fs needs security model");
-        error_printf("valid options are:"
-                     "\tsecurity_model=[passthrough|mapped-xattr|mapped-file|none]\n");
+        error_setg(errp, "security_model property not set");
+        error_append_security_model_hint(errp);
         return -1;
     }
 
@@ -1450,20 +1488,20 @@ static int local_parse_opts(QemuOpts *opts, struct FsDriverEntry *fse)
     } else if (!strcmp(sec_model, "mapped-file")) {
         fse->export_flags |= V9FS_SM_MAPPED_FILE;
     } else {
-        error_report("Invalid security model %s specified", sec_model);
-        error_printf("valid options are:"
-                     "\t[passthrough|mapped-xattr|mapped-file|none]\n");
+        error_setg(errp, "invalid security_model property '%s'", sec_model);
+        error_append_security_model_hint(errp);
         return -1;
     }
 
     if (!path) {
-        error_report("fsdev: No path specified");
+        error_setg(errp, "path property not set");
         return -1;
     }
 
-    fsdev_throttle_parse_opts(opts, &fse->fst, &err);
-    if (err) {
-        error_reportf_err(err, "Throttle configuration is not valid: ");
+    fsdev_throttle_parse_opts(opts, &fse->fst, &local_err);
+    if (local_err) {
+        error_propagate(errp, local_err);
+        error_prepend(errp, "invalid throttle configuration: ");
         return -1;
     }
 
@@ -1475,11 +1513,11 @@ static int local_parse_opts(QemuOpts *opts, struct FsDriverEntry *fse)
             qemu_opt_get_number(opts, "dmode", SM_LOCAL_DIR_MODE_BITS) & 0777;
     } else {
         if (qemu_opt_find(opts, "fmode")) {
-            error_report("fmode is only valid for mapped 9p modes");
+            error_setg(errp, "fmode is only valid for mapped security modes");
             return -1;
         }
         if (qemu_opt_find(opts, "dmode")) {
-            error_report("dmode is only valid for mapped 9p modes");
+            error_setg(errp, "dmode is only valid for mapped security modes");
             return -1;
         }
     }

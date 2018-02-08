@@ -11,13 +11,21 @@
 # This work is licensed under the terms of the GNU GPL, version 2.
 # See the COPYING file in the top-level directory.
 
+from __future__ import print_function
 import errno
 import getopt
 import os
 import re
 import string
 import sys
-from ordereddict import OrderedDict
+try:
+    from collections import OrderedDict
+except:
+    from ordereddict import OrderedDict
+try:
+    from StringIO import StringIO
+except ImportError:
+    from io import StringIO
 
 builtin_types = {
     'null':     'QTYPE_QNULL',
@@ -106,13 +114,10 @@ class QAPIDoc(object):
             # optional section name (argument/member or section name)
             self.name = name
             # the list of lines for this section
-            self.content = []
+            self.text = ''
 
         def append(self, line):
-            self.content.append(line)
-
-        def __repr__(self):
-            return '\n'.join(self.content).strip()
+            self.text += line.rstrip() + '\n'
 
     class ArgSection(Section):
         def __init__(self, name):
@@ -123,11 +128,11 @@ class QAPIDoc(object):
             self.member = member
 
     def __init__(self, parser, info):
-        # self.parser is used to report errors with QAPIParseError.  The
+        # self._parser is used to report errors with QAPIParseError.  The
         # resulting error position depends on the state of the parser.
         # It happens to be the beginning of the comment.  More or less
         # servicable, but action at a distance.
-        self.parser = parser
+        self._parser = parser
         self.info = info
         self.symbol = None
         self.body = QAPIDoc.Section()
@@ -136,7 +141,7 @@ class QAPIDoc(object):
         # a list of Section
         self.sections = []
         # the current section
-        self.section = self.body
+        self._section = self.body
 
     def has_section(self, name):
         """Return True if we have a section with this name."""
@@ -153,20 +158,20 @@ class QAPIDoc(object):
             return
 
         if line[0] != ' ':
-            raise QAPIParseError(self.parser, "Missing space after #")
+            raise QAPIParseError(self._parser, "Missing space after #")
         line = line[1:]
 
         # FIXME not nice: things like '#  @foo:' and '# @foo: ' aren't
         # recognized, and get silently treated as ordinary text
         if self.symbol:
             self._append_symbol_line(line)
-        elif not self.body.content and line.startswith('@'):
+        elif not self.body.text and line.startswith('@'):
             if not line.endswith(':'):
-                raise QAPIParseError(self.parser, "Line should end with :")
+                raise QAPIParseError(self._parser, "Line should end with :")
             self.symbol = line[1:-1]
             # FIXME invalid names other than the empty string aren't flagged
             if not self.symbol:
-                raise QAPIParseError(self.parser, "Invalid name")
+                raise QAPIParseError(self._parser, "Invalid name")
         else:
             self._append_freeform(line)
 
@@ -192,53 +197,48 @@ class QAPIDoc(object):
     def _start_args_section(self, name):
         # FIXME invalid names other than the empty string aren't flagged
         if not name:
-            raise QAPIParseError(self.parser, "Invalid parameter name")
+            raise QAPIParseError(self._parser, "Invalid parameter name")
         if name in self.args:
-            raise QAPIParseError(self.parser,
+            raise QAPIParseError(self._parser,
                                  "'%s' parameter name duplicated" % name)
         if self.sections:
-            raise QAPIParseError(self.parser,
+            raise QAPIParseError(self._parser,
                                  "'@%s:' can't follow '%s' section"
                                  % (name, self.sections[0].name))
         self._end_section()
-        self.section = QAPIDoc.ArgSection(name)
-        self.args[name] = self.section
+        self._section = QAPIDoc.ArgSection(name)
+        self.args[name] = self._section
 
-    def _start_section(self, name=''):
+    def _start_section(self, name=None):
         if name in ('Returns', 'Since') and self.has_section(name):
-            raise QAPIParseError(self.parser,
+            raise QAPIParseError(self._parser,
                                  "Duplicated '%s' section" % name)
         self._end_section()
-        self.section = QAPIDoc.Section(name)
-        self.sections.append(self.section)
+        self._section = QAPIDoc.Section(name)
+        self.sections.append(self._section)
 
     def _end_section(self):
-        if self.section:
-            contents = str(self.section)
-            if self.section.name and (not contents or contents.isspace()):
-                raise QAPIParseError(self.parser, "Empty doc section '%s'"
-                                     % self.section.name)
-            self.section = None
+        if self._section:
+            text = self._section.text = self._section.text.strip()
+            if self._section.name and (not text or text.isspace()):
+                raise QAPIParseError(self._parser, "Empty doc section '%s'"
+                                     % self._section.name)
+            self._section = None
 
     def _append_freeform(self, line):
-        in_arg = isinstance(self.section, QAPIDoc.ArgSection)
-        if (in_arg and self.section.content
-                and not self.section.content[-1]
+        in_arg = isinstance(self._section, QAPIDoc.ArgSection)
+        if (in_arg and self._section.text.endswith('\n\n')
                 and line and not line[0].isspace()):
             self._start_section()
-        if (in_arg or not self.section.name
-                or not self.section.name.startswith('Example')):
+        if (in_arg or not self._section.name
+                or not self._section.name.startswith('Example')):
             line = line.strip()
         match = re.match(r'(@\S+:)', line)
         if match:
-            raise QAPIParseError(self.parser,
+            raise QAPIParseError(self._parser,
                                  "'%s' not allowed in free-form documentation"
                                  % match.group(1))
-        # TODO Drop this once the dust has settled
-        if (isinstance(self.section, QAPIDoc.ArgSection)
-                and '#optional' in line):
-            raise QAPISemError(self.info, "Please drop the #optional tag")
-        self.section.append(line)
+        self._section.append(line)
 
     def connect_member(self, member):
         if member.name not in self.args:
@@ -252,7 +252,7 @@ class QAPIDoc(object):
                                "'Returns:' is only valid for commands")
 
     def check(self):
-        bogus = [name for name, section in self.args.iteritems()
+        bogus = [name for name, section in self.args.items()
                  if not section.member]
         if bogus:
             raise QAPISemError(
@@ -265,8 +265,7 @@ class QAPISchemaParser(object):
 
     def __init__(self, fp, previously_included=[], incl_info=None):
         abs_fname = os.path.abspath(fp.name)
-        fname = fp.name
-        self.fname = fname
+        self.fname = fp.name
         previously_included.append(abs_fname)
         self.incl_info = incl_info
         self.src = fp.read()
@@ -277,21 +276,21 @@ class QAPISchemaParser(object):
         self.line_pos = 0
         self.exprs = []
         self.docs = []
-        self.cur_doc = None
         self.accept()
+        cur_doc = None
 
         while self.tok is not None:
-            info = {'file': fname, 'line': self.line,
+            info = {'file': self.fname, 'line': self.line,
                     'parent': self.incl_info}
             if self.tok == '#':
-                self.reject_expr_doc()
-                self.cur_doc = self.get_doc(info)
-                self.docs.append(self.cur_doc)
+                self.reject_expr_doc(cur_doc)
+                cur_doc = self.get_doc(info)
+                self.docs.append(cur_doc)
                 continue
 
             expr = self.get_expr(False)
             if 'include' in expr:
-                self.reject_expr_doc()
+                self.reject_expr_doc(cur_doc)
                 if len(expr) != 1:
                     raise QAPISemError(info, "Invalid 'include' directive")
                 include = expr['include']
@@ -301,34 +300,34 @@ class QAPISchemaParser(object):
                 self._include(include, info, os.path.dirname(abs_fname),
                               previously_included)
             elif "pragma" in expr:
-                self.reject_expr_doc()
+                self.reject_expr_doc(cur_doc)
                 if len(expr) != 1:
                     raise QAPISemError(info, "Invalid 'pragma' directive")
                 pragma = expr['pragma']
                 if not isinstance(pragma, dict):
                     raise QAPISemError(
                         info, "Value of 'pragma' must be a dictionary")
-                for name, value in pragma.iteritems():
+                for name, value in pragma.items():
                     self._pragma(name, value, info)
             else:
                 expr_elem = {'expr': expr,
                              'info': info}
-                if self.cur_doc:
-                    if not self.cur_doc.symbol:
+                if cur_doc:
+                    if not cur_doc.symbol:
                         raise QAPISemError(
-                            self.cur_doc.info,
-                            "Expression documentation required")
-                    expr_elem['doc'] = self.cur_doc
+                            cur_doc.info, "Expression documentation required")
+                    expr_elem['doc'] = cur_doc
                 self.exprs.append(expr_elem)
-            self.cur_doc = None
-        self.reject_expr_doc()
+            cur_doc = None
+        self.reject_expr_doc(cur_doc)
 
-    def reject_expr_doc(self):
-        if self.cur_doc and self.cur_doc.symbol:
+    @staticmethod
+    def reject_expr_doc(doc):
+        if doc and doc.symbol:
             raise QAPISemError(
-                self.cur_doc.info,
+                doc.info,
                 "Documentation for '%s' is not followed by the definition"
-                % self.cur_doc.symbol)
+                % doc.symbol)
 
     def _include(self, include, info, base_dir, previously_included):
         incl_abs_fname = os.path.join(base_dir, include)
@@ -825,11 +824,11 @@ def check_alternate(expr, info):
             else:
                 conflicting.add('QTYPE_QNUM')
                 conflicting.add('QTYPE_QBOOL')
-        if conflicting & set(types_seen):
-            raise QAPISemError(info, "Alternate '%s' member '%s' can't "
-                               "be distinguished from member '%s'"
-                               % (name, key, types_seen[qtype]))
         for qt in conflicting:
+            if qt in types_seen:
+                raise QAPISemError(info, "Alternate '%s' member '%s' can't "
+                                   "be distinguished from member '%s'"
+                                   % (name, key, types_seen[qt]))
             types_seen[qt] = key
 
 
@@ -1476,7 +1475,7 @@ class QAPISchema(object):
             self._def_exprs()
             self.check()
         except QAPIError as err:
-            print >>sys.stderr, err
+            print(err, file=sys.stderr)
             exit(1)
 
     def _def_entity(self, ent):
@@ -1574,7 +1573,7 @@ class QAPISchema(object):
 
     def _make_members(self, data, info):
         return [self._make_member(key, value, info)
-                for (key, value) in data.iteritems()]
+                for (key, value) in data.items()]
 
     def _def_struct_type(self, expr, info, doc):
         name = expr['struct']
@@ -1606,11 +1605,11 @@ class QAPISchema(object):
                 name, info, doc, 'base', self._make_members(base, info)))
         if tag_name:
             variants = [self._make_variant(key, value)
-                        for (key, value) in data.iteritems()]
+                        for (key, value) in data.items()]
             members = []
         else:
             variants = [self._make_simple_variant(key, value, info)
-                        for (key, value) in data.iteritems()]
+                        for (key, value) in data.items()]
             typ = self._make_implicit_enum_type(name, info,
                                                 [v.name for v in variants])
             tag_member = QAPISchemaObjectTypeMember('type', typ, False)
@@ -1625,7 +1624,7 @@ class QAPISchema(object):
         name = expr['alternate']
         data = expr['data']
         variants = [self._make_variant(key, value)
-                    for (key, value) in data.iteritems()]
+                    for (key, value) in data.items()]
         tag_member = QAPISchemaObjectTypeMember('type', 'QType', False)
         self._def_entity(
             QAPISchemaAlternateType(name, info, doc,
@@ -1679,7 +1678,7 @@ class QAPISchema(object):
                 assert False
 
     def check(self):
-        for ent in self._entity_dict.values():
+        for (name, ent) in sorted(self._entity_dict.items()):
             ent.check(self)
 
     def visit(self, visitor):
@@ -1735,7 +1734,10 @@ def c_enum_const(type_name, const_name, prefix=None):
         type_name = prefix
     return camel_to_upper(type_name) + '_' + c_name(const_name, False).upper()
 
-c_name_trans = string.maketrans('.-', '__')
+if hasattr(str, 'maketrans'):
+    c_name_trans = str.maketrans('.-', '__')
+else:
+    c_name_trans = string.maketrans('.-', '__')
 
 
 # Map @name to a valid C identifier.
@@ -1849,22 +1851,23 @@ def guardend(name):
 def gen_enum_lookup(name, values, prefix=None):
     ret = mcgen('''
 
-const char *const %(c_name)s_lookup[] = {
+const QEnumLookup %(c_name)s_lookup = {
+    .array = (const char *const[]) {
 ''',
                 c_name=c_name(name))
     for value in values:
         index = c_enum_const(name, value, prefix)
         ret += mcgen('''
-    [%(index)s] = "%(value)s",
+        [%(index)s] = "%(value)s",
 ''',
                      index=index, value=value)
 
-    max_index = c_enum_const(name, '_MAX', prefix)
     ret += mcgen('''
-    [%(max_index)s] = NULL,
+    },
+    .size = %(max_index)s
 };
 ''',
-                 max_index=max_index)
+                 max_index=c_enum_const(name, '_MAX', prefix))
     return ret
 
 
@@ -1894,7 +1897,10 @@ typedef enum %(c_name)s {
 
     ret += mcgen('''
 
-extern const char *const %(c_name)s_lookup[];
+#define %(c_name)s_str(val) \\
+    qapi_enum_lookup(&%(c_name)s_lookup, (val))
+
+extern const QEnumLookup %(c_name)s_lookup;
 ''',
                  c_name=c_name(name))
     return ret
@@ -1936,7 +1942,7 @@ def parse_command_line(extra_options='', extra_long_options=[]):
                                        ['source', 'header', 'prefix=',
                                         'output-dir='] + extra_long_options)
     except getopt.GetoptError as err:
-        print >>sys.stderr, "%s: %s" % (sys.argv[0], str(err))
+        print("%s: %s" % (sys.argv[0], str(err)), file=sys.stderr)
         sys.exit(1)
 
     output_dir = ''
@@ -1950,9 +1956,8 @@ def parse_command_line(extra_options='', extra_long_options=[]):
         if o in ('-p', '--prefix'):
             match = re.match(r'([A-Za-z_.-][A-Za-z0-9_.-]*)?', a)
             if match.end() != len(a):
-                print >>sys.stderr, \
-                    "%s: 'funny character '%s' in argument of --prefix" \
-                    % (sys.argv[0], a[match.end()])
+                print("%s: 'funny character '%s' in argument of --prefix" \
+                      % (sys.argv[0], a[match.end()]), file=sys.stderr)
                 sys.exit(1)
             prefix = a
         elif o in ('-o', '--output-dir'):
@@ -1969,7 +1974,7 @@ def parse_command_line(extra_options='', extra_long_options=[]):
         do_h = True
 
     if len(args) != 1:
-        print >>sys.stderr, "%s: need exactly one argument" % sys.argv[0]
+        print("%s: need exactly one argument" % sys.argv[0], file=sys.stderr)
         sys.exit(1)
     fname = args[0]
 
@@ -1997,8 +2002,7 @@ def open_output(output_dir, do_c, do_h, prefix, c_file, h_file,
         if really:
             return open(name, opt)
         else:
-            import StringIO
-            return StringIO.StringIO()
+            return StringIO()
 
     fdef = maybe_open(do_c, c_file, 'w')
     fdecl = maybe_open(do_h, h_file, 'w')

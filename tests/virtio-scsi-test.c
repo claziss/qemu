@@ -10,7 +10,7 @@
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
-#include "block/scsi.h"
+#include "scsi/constants.h"
 #include "libqos/libqos-pc.h"
 #include "libqos/libqos-spapr.h"
 #include "libqos/virtio.h"
@@ -121,7 +121,8 @@ static uint8_t virtio_scsi_do_command(QVirtIOSCSI *vs, const uint8_t *cdb,
     }
 
     qvirtqueue_kick(vs->dev, vq, free_head);
-    qvirtio_wait_used_elem(vs->dev, vq, free_head, QVIRTIO_SCSI_TIMEOUT_US);
+    qvirtio_wait_used_elem(vs->dev, vq, free_head, NULL,
+                           QVIRTIO_SCSI_TIMEOUT_US);
 
     response = readb(resp_addr +
                      offsetof(struct virtio_scsi_cmd_resp, response));
@@ -192,32 +193,12 @@ static void pci_nop(void)
 
 static void hotplug(void)
 {
-    QDict *response;
     QOSState *qs;
 
     qs = qvirtio_scsi_start(
             "-drive id=drv1,if=none,file=null-co://,format=raw");
-    response = qmp("{\"execute\": \"device_add\","
-                   " \"arguments\": {"
-                   "   \"driver\": \"scsi-hd\","
-                   "   \"id\": \"scsi-hd\","
-                   "   \"drive\": \"drv1\""
-                   "}}");
-
-    g_assert(response);
-    g_assert(!qdict_haskey(response, "error"));
-    QDECREF(response);
-
-    response = qmp("{\"execute\": \"device_del\","
-                   " \"arguments\": {"
-                   "   \"id\": \"scsi-hd\""
-                   "}}");
-
-    g_assert(response);
-    g_assert(!qdict_haskey(response, "error"));
-    g_assert(qdict_haskey(response, "event"));
-    g_assert(!strcmp(qdict_get_str(response, "event"), "DEVICE_DELETED"));
-    QDECREF(response);
+    qtest_qmp_device_add("scsi-hd", "scsihd", "'drive': 'drv1'");
+    qtest_qmp_device_del("scsihd");
     qvirtio_scsi_stop(qs);
 }
 

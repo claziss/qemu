@@ -6,7 +6,9 @@ check-qdict
 check-qnum
 check-qjson
 check-qlist
+check-qlit
 check-qnull
+check-qobject
 check-qstring
 check-qom-interface
 check-qom-proplist
@@ -16,6 +18,7 @@ test-aio
 test-aio-multithread
 test-arm-mptimer
 test-base64
+test-bdrv-drain
 test-bitops
 test-bitcnt
 test-blockjob
@@ -95,3 +98,4 @@ test-filter-mirror
 test-filter-redirector
 *-test
 qapi-schema/*.test.*
+vm/*.img

@@ -358,7 +358,7 @@ int kvm_arch_put_registers(CPUState *cs, int level)
     /* VFP registers */
     r.id = KVM_REG_ARM | KVM_REG_SIZE_U64 | KVM_REG_ARM_VFP;
     for (i = 0; i < 32; i++) {
-        r.addr = (uintptr_t)(&env->vfp.regs[i]);
+        r.addr = (uintptr_t)aa32_vfp_dreg(env, i);
         ret = kvm_vcpu_ioctl(cs, KVM_SET_ONE_REG, &r);
         if (ret) {
             return ret;
@@ -445,7 +445,7 @@ int kvm_arch_get_registers(CPUState *cs)
     /* VFP registers */
     r.id = KVM_REG_ARM | KVM_REG_SIZE_U64 | KVM_REG_ARM_VFP;
     for (i = 0; i < 32; i++) {
-        r.addr = (uintptr_t)(&env->vfp.regs[i]);
+        r.addr = (uintptr_t)aa32_vfp_dreg(env, i);
         ret = kvm_vcpu_ioctl(cs, KVM_GET_ONE_REG, &r);
         if (ret) {
             return ret;
@@ -522,8 +522,12 @@ bool kvm_arm_hw_debug_active(CPUState *cs)
     return false;
 }
 
-int kvm_arm_pmu_create(CPUState *cs, int irq)
+void kvm_arm_pmu_set_irq(CPUState *cs, int irq)
 {
     qemu_log_mask(LOG_UNIMP, "%s: not implemented\n", __func__);
-    return 0;
+}
+
+void kvm_arm_pmu_init(CPUState *cs)
+{
+    qemu_log_mask(LOG_UNIMP, "%s: not implemented\n", __func__);
 }

@@ -27,6 +27,7 @@
 #include "hw/virtio/virtio-access.h"
 #include "migration/blocker.h"
 #include "sysemu/dma.h"
+#include "trace.h"
 
 /* enabled until disconnected backend stabilizes */
 #define _VHOST_DEBUG 1
@@ -70,7 +71,7 @@ static void vhost_dev_sync_region(struct vhost_dev *dev,
     uint64_t end = MIN(mlast, rlast);
     vhost_log_chunk_t *from = log + start / VHOST_LOG_CHUNK;
     vhost_log_chunk_t *to = log + end / VHOST_LOG_CHUNK + 1;
-    uint64_t addr = (start / VHOST_LOG_CHUNK) * VHOST_LOG_CHUNK;
+    uint64_t addr = QEMU_ALIGN_DOWN(start, VHOST_LOG_CHUNK);
 
     if (end < start) {
         return;
@@ -329,6 +330,7 @@ static uint64_t vhost_get_log_size(struct vhost_dev *dev)
 
 static struct vhost_log *vhost_log_alloc(uint64_t size, bool share)
 {
+    Error *err = NULL;
     struct vhost_log *log;
     uint64_t logsize = size * sizeof(*(log->log));
     int fd = -1;
@@ -337,7 +339,12 @@ static struct vhost_log *vhost_log_alloc(uint64_t size, bool share)
     if (share) {
         log->log = qemu_memfd_alloc("vhost-log", logsize,
                                     F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL,
-                                    &fd);
+                                    &fd, &err);
+        if (err) {
+            error_report_err(err);
+            g_free(log);
+            return NULL;
+        }
         memset(log->log, 0, logsize);
     } else {
         log->log = g_malloc0(logsize);
@@ -375,8 +382,6 @@ static void vhost_log_put(struct vhost_dev *dev, bool sync)
     if (!log) {
         return;
     }
-    dev->log = NULL;
-    dev->log_size = 0;
 
     --log->refcnt;
     if (log->refcnt == 0) {
@@ -396,6 +401,9 @@ static void vhost_log_put(struct vhost_dev *dev, bool sync)
 
         g_free(log);
     }
+
+    dev->log = NULL;
+    dev->log_size = 0;
 }
 
 static bool vhost_dev_log_is_shared(struct vhost_dev *dev)
@@ -492,21 +500,21 @@ static int vhost_verify_ring_mappings(struct vhost_dev *dev,
         j = 0;
         r = vhost_verify_ring_part_mapping(dev, vq->desc, vq->desc_phys,
                                            vq->desc_size, start_addr, size);
-        if (!r) {
+        if (r) {
             break;
         }
 
         j++;
         r = vhost_verify_ring_part_mapping(dev, vq->avail, vq->avail_phys,
                                            vq->avail_size, start_addr, size);
-        if (!r) {
+        if (r) {
             break;
         }
 
         j++;
         r = vhost_verify_ring_part_mapping(dev, vq->used, vq->used_phys,
                                            vq->used_size, start_addr, size);
-        if (!r) {
+        if (r) {
             break;
         }
     }
@@ -686,6 +694,7 @@ static void vhost_region_add(MemoryListener *listener,
         return;
     }
 
+    trace_vhost_region_add(dev, section->mr->name ?: NULL);
     ++dev->n_mem_sections;
     dev->mem_sections = g_renew(MemoryRegionSection, dev->mem_sections,
                                 dev->n_mem_sections);
@@ -705,6 +714,7 @@ static void vhost_region_del(MemoryListener *listener,
         return;
     }
 
+    trace_vhost_region_del(dev, section->mr->name ?: NULL);
     vhost_set_memory(listener, section, false);
     memory_region_unref(section->mr);
     for (i = 0; i < dev->n_mem_sections; ++i) {
@@ -742,6 +752,8 @@ static void vhost_iommu_region_add(MemoryListener *listener,
         return;
     }
 
+    trace_vhost_iommu_region_add(dev, section->mr->name ?: NULL);
+
     iommu = g_malloc0(sizeof(*iommu));
     end = int128_add(int128_make64(section->offset_within_region),
                      section->size);
@@ -769,6 +781,8 @@ static void vhost_iommu_region_del(MemoryListener *listener,
     if (!memory_region_is_iommu(section->mr)) {
         return;
     }
+
+    trace_vhost_iommu_region_del(dev, section->mr->name ?: NULL);
 
     QLIST_FOREACH(iommu, &dev->iommu_list, iommu_next) {
         if (iommu->mr == section->mr &&
@@ -1137,6 +1151,10 @@ static void vhost_virtqueue_stop(struct vhost_dev *dev,
     r = dev->vhost_ops->vhost_get_vring_base(dev, &state);
     if (r < 0) {
         VHOST_OPS_DEBUG("vhost VQ %d ring restore failed: %d", idx, r);
+        /* Connection to the backend is broken, so let's sync internal
+         * last avail idx to the device used idx.
+         */
+        virtio_queue_restore_last_avail_idx(vdev, idx);
     } else {
         virtio_queue_set_last_avail_idx(vdev, idx, state.num);
     }
@@ -1494,6 +1512,38 @@ void vhost_ack_features(struct vhost_dev *hdev, const int *feature_bits,
         }
         bit++;
     }
+}
+
+int vhost_dev_get_config(struct vhost_dev *hdev, uint8_t *config,
+                         uint32_t config_len)
+{
+    assert(hdev->vhost_ops);
+
+    if (hdev->vhost_ops->vhost_get_config) {
+        return hdev->vhost_ops->vhost_get_config(hdev, config, config_len);
+    }
+
+    return -1;
+}
+
+int vhost_dev_set_config(struct vhost_dev *hdev, const uint8_t *data,
+                         uint32_t offset, uint32_t size, uint32_t flags)
+{
+    assert(hdev->vhost_ops);
+
+    if (hdev->vhost_ops->vhost_set_config) {
+        return hdev->vhost_ops->vhost_set_config(hdev, data, offset,
+                                                 size, flags);
+    }
+
+    return -1;
+}
+
+void vhost_dev_set_config_notifier(struct vhost_dev *hdev,
+                                   const VhostDevConfigOps *ops)
+{
+    assert(hdev->vhost_ops);
+    hdev->config_ops = ops;
 }
 
 /* Host notifiers must be enabled at this point. */

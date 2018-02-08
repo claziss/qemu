@@ -39,7 +39,7 @@ void exec_start_outgoing_migration(MigrationState *s, const char *command, Error
     }
 
     qio_channel_set_name(ioc, "migration-exec-outgoing");
-    migration_channel_connect(s, ioc, NULL);
+    migration_channel_connect(s, ioc, NULL, NULL);
     object_unref(OBJECT(ioc));
 }
 
@@ -49,7 +49,7 @@ static gboolean exec_accept_incoming_migration(QIOChannel *ioc,
 {
     migration_channel_process_incoming(ioc);
     object_unref(OBJECT(ioc));
-    return FALSE; /* unregister */
+    return G_SOURCE_REMOVE;
 }
 
 void exec_start_incoming_migration(const char *command, Error **errp)

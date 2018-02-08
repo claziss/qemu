@@ -2,7 +2,7 @@
  * QEMU Block driver for iSCSI images
  *
  * Copyright (c) 2010-2011 Ronnie Sahlberg <ronniesahlberg@gmail.com>
- * Copyright (c) 2012-2016 Peter Lieven <pl@kamp.de>
+ * Copyright (c) 2012-2017 Peter Lieven <pl@kamp.de>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -34,15 +34,20 @@
 #include "qemu/bitops.h"
 #include "qemu/bitmap.h"
 #include "block/block_int.h"
-#include "block/scsi.h"
+#include "scsi/constants.h"
 #include "qemu/iov.h"
 #include "qemu/uuid.h"
 #include "qmp-commands.h"
 #include "qapi/qmp/qstring.h"
 #include "crypto/secret.h"
+#include "scsi/utils.h"
 
+/* Conflict between scsi/utils.h and libiscsi! :( */
+#define SCSI_XFER_NONE ISCSI_XFER_NONE
 #include <iscsi/iscsi.h>
 #include <iscsi/scsi-lowlevel.h>
+#undef SCSI_XFER_NONE
+QEMU_BUILD_BUG_ON((int)SCSI_XFER_NONE != (int)ISCSI_XFER_NONE);
 
 #ifdef __linux__
 #include <scsi/sg.h>
@@ -99,6 +104,7 @@ typedef struct IscsiTask {
     IscsiLun *iscsilun;
     QEMUTimer retry_timer;
     int err_code;
+    char *err_str;
 } IscsiTask;
 
 typedef struct IscsiAIOCB {
@@ -209,47 +215,9 @@ static inline unsigned exp_random(double mean)
 
 static int iscsi_translate_sense(struct scsi_sense *sense)
 {
-    int ret;
-
-    switch (sense->key) {
-    case SCSI_SENSE_NOT_READY:
-        return -EBUSY;
-    case SCSI_SENSE_DATA_PROTECTION:
-        return -EACCES;
-    case SCSI_SENSE_COMMAND_ABORTED:
-        return -ECANCELED;
-    case SCSI_SENSE_ILLEGAL_REQUEST:
-        /* Parse ASCQ */
-        break;
-    default:
-        return -EIO;
-    }
-    switch (sense->ascq) {
-    case SCSI_SENSE_ASCQ_PARAMETER_LIST_LENGTH_ERROR:
-    case SCSI_SENSE_ASCQ_INVALID_OPERATION_CODE:
-    case SCSI_SENSE_ASCQ_INVALID_FIELD_IN_CDB:
-    case SCSI_SENSE_ASCQ_INVALID_FIELD_IN_PARAMETER_LIST:
-        ret = -EINVAL;
-        break;
-    case SCSI_SENSE_ASCQ_LBA_OUT_OF_RANGE:
-        ret = -ENOSPC;
-        break;
-    case SCSI_SENSE_ASCQ_LOGICAL_UNIT_NOT_SUPPORTED:
-        ret = -ENOTSUP;
-        break;
-    case SCSI_SENSE_ASCQ_MEDIUM_NOT_PRESENT:
-    case SCSI_SENSE_ASCQ_MEDIUM_NOT_PRESENT_TRAY_CLOSED:
-    case SCSI_SENSE_ASCQ_MEDIUM_NOT_PRESENT_TRAY_OPEN:
-        ret = -ENOMEDIUM;
-        break;
-    case SCSI_SENSE_ASCQ_WRITE_PROTECTED:
-        ret = -EACCES;
-        break;
-    default:
-        ret = -EIO;
-        break;
-    }
-    return ret;
+    return - scsi_sense_to_errno(sense->key,
+                                 (sense->ascq & 0xFF00) >> 8,
+                                 sense->ascq & 0xFF);
 }
 
 /* Called (via iscsi_service) with QemuMutex held.  */
@@ -298,7 +266,7 @@ iscsi_co_generic_cb(struct iscsi_context *iscsi, int status,
             }
         }
         iTask->err_code = iscsi_translate_sense(&task->sense);
-        error_report("iSCSI Failure: %s", iscsi_get_error(iscsi));
+        iTask->err_str = g_strdup(iscsi_get_error(iscsi));
     }
 
 out:
@@ -662,6 +630,8 @@ retry:
 
     if (iTask.status != SCSI_STATUS_GOOD) {
         iscsi_allocmap_set_invalid(iscsilun, sector_num, nb_sectors);
+        error_report("iSCSI WRITE10/16 failed at lba %" PRIu64 ": %s", lba,
+                     iTask.err_str);
         r = iTask.err_code;
         goto out_unlock;
     }
@@ -670,6 +640,7 @@ retry:
 
 out_unlock:
     qemu_mutex_unlock(&iscsilun->mutex);
+    g_free(iTask.err_str);
     return r;
 }
 
@@ -684,6 +655,7 @@ static int64_t coroutine_fn iscsi_co_get_block_status(BlockDriverState *bs,
     struct scsi_get_lba_status *lbas = NULL;
     struct scsi_lba_status_descriptor *lbasd = NULL;
     struct IscsiTask iTask;
+    uint64_t lba;
     int64_t ret;
 
     iscsi_co_init_iscsitask(iscsilun, &iTask);
@@ -703,11 +675,12 @@ static int64_t coroutine_fn iscsi_co_get_block_status(BlockDriverState *bs,
         goto out;
     }
 
+    lba = sector_qemu2lun(sector_num, iscsilun);
+
     qemu_mutex_lock(&iscsilun->mutex);
 retry:
     if (iscsi_get_lba_status_task(iscsilun->iscsi, iscsilun->lun,
-                                  sector_qemu2lun(sector_num, iscsilun),
-                                  8 + 16, iscsi_co_generic_cb,
+                                  lba, 8 + 16, iscsi_co_generic_cb,
                                   &iTask) == NULL) {
         ret = -ENOMEM;
         goto out_unlock;
@@ -734,6 +707,8 @@ retry:
          * because the device is busy or the cmd is not
          * supported) we pretend all blocks are allocated
          * for backwards compatibility */
+        error_report("iSCSI GET_LBA_STATUS failed at lba %" PRIu64 ": %s",
+                     lba, iTask.err_str);
         goto out_unlock;
     }
 
@@ -771,6 +746,7 @@ retry:
     }
 out_unlock:
     qemu_mutex_unlock(&iscsilun->mutex);
+    g_free(iTask.err_str);
 out:
     if (iTask.task != NULL) {
         scsi_free_scsi_task(iTask.task);
@@ -789,6 +765,7 @@ static int coroutine_fn iscsi_co_readv(BlockDriverState *bs,
     struct IscsiTask iTask;
     uint64_t lba;
     uint32_t num_sectors;
+    int r = 0;
 
     if (!is_sector_request_lun_aligned(sector_num, nb_sectors, iscsilun)) {
         return -EINVAL;
@@ -886,19 +863,23 @@ retry:
         iTask.complete = 0;
         goto retry;
     }
-    qemu_mutex_unlock(&iscsilun->mutex);
 
     if (iTask.status != SCSI_STATUS_GOOD) {
-        return iTask.err_code;
+        error_report("iSCSI READ10/16 failed at lba %" PRIu64 ": %s",
+                     lba, iTask.err_str);
+        r = iTask.err_code;
     }
 
-    return 0;
+    qemu_mutex_unlock(&iscsilun->mutex);
+    g_free(iTask.err_str);
+    return r;
 }
 
 static int coroutine_fn iscsi_co_flush(BlockDriverState *bs)
 {
     IscsiLun *iscsilun = bs->opaque;
     struct IscsiTask iTask;
+    int r = 0;
 
     iscsi_co_init_iscsitask(iscsilun, &iTask);
     qemu_mutex_lock(&iscsilun->mutex);
@@ -925,13 +906,15 @@ retry:
         iTask.complete = 0;
         goto retry;
     }
-    qemu_mutex_unlock(&iscsilun->mutex);
 
     if (iTask.status != SCSI_STATUS_GOOD) {
-        return iTask.err_code;
+        error_report("iSCSI SYNCHRONIZECACHE10 failed: %s", iTask.err_str);
+        r = iTask.err_code;
     }
 
-    return 0;
+    qemu_mutex_unlock(&iscsilun->mutex);
+    g_free(iTask.err_str);
+    return r;
 }
 
 #ifdef __linux__
@@ -1161,6 +1144,9 @@ retry:
         goto retry;
     }
 
+    iscsi_allocmap_set_invalid(iscsilun, offset >> BDRV_SECTOR_BITS,
+                               bytes >> BDRV_SECTOR_BITS);
+
     if (iTask.status == SCSI_STATUS_CHECK_CONDITION) {
         /* the target might fail with a check condition if it
            is not happy with the alignment of the UNMAP request
@@ -1169,15 +1155,15 @@ retry:
     }
 
     if (iTask.status != SCSI_STATUS_GOOD) {
+        error_report("iSCSI UNMAP failed at lba %" PRIu64 ": %s",
+                     list.lba, iTask.err_str);
         r = iTask.err_code;
         goto out_unlock;
     }
 
-    iscsi_allocmap_set_invalid(iscsilun, offset >> BDRV_SECTOR_BITS,
-                               bytes >> BDRV_SECTOR_BITS);
-
 out_unlock:
     qemu_mutex_unlock(&iscsilun->mutex);
+    g_free(iTask.err_str);
     return r;
 }
 
@@ -1274,6 +1260,8 @@ retry:
     if (iTask.status != SCSI_STATUS_GOOD) {
         iscsi_allocmap_set_invalid(iscsilun, offset >> BDRV_SECTOR_BITS,
                                    bytes >> BDRV_SECTOR_BITS);
+        error_report("iSCSI WRITESAME10/16 failed at lba %" PRIu64 ": %s",
+                     lba, iTask.err_str);
         r = iTask.err_code;
         goto out_unlock;
     }
@@ -1288,6 +1276,7 @@ retry:
 
 out_unlock:
     qemu_mutex_unlock(&iscsilun->mutex);
+    g_free(iTask.err_str);
     return r;
 }
 
@@ -2087,7 +2076,7 @@ static int iscsi_truncate(BlockDriverState *bs, int64_t offset,
 
     if (prealloc != PREALLOC_MODE_OFF) {
         error_setg(errp, "Unsupported preallocation mode '%s'",
-                   PreallocMode_lookup[prealloc]);
+                   PreallocMode_str(prealloc));
         return -ENOTSUP;
     }
 

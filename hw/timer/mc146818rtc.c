@@ -795,11 +795,13 @@ static void rtc_set_date_from_host(ISADevice *dev)
     rtc_set_cmos(s, &tm);
 }
 
-static void rtc_pre_save(void *opaque)
+static int rtc_pre_save(void *opaque)
 {
     RTCState *s = opaque;
 
     rtc_update_time(s);
+
+    return 0;
 }
 
 static int rtc_post_load(void *opaque, int version_id)
@@ -997,7 +999,7 @@ static void rtc_realizefn(DeviceState *dev, Error **errp)
     qdev_init_gpio_out(dev, &s->irq, 1);
 }
 
-ISADevice *rtc_init(ISABus *bus, int base_year, qemu_irq intercept_irq)
+ISADevice *mc146818_rtc_init(ISABus *bus, int base_year, qemu_irq intercept_irq)
 {
     DeviceState *dev;
     ISADevice *isadev;
