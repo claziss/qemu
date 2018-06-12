@@ -32,7 +32,8 @@
 #include "exec/gdbstub.h"
 #endif
 
-#define MAX_PACKET_LENGTH 4096
+//#define MAX_PACKET_LENGTH 4096
+#define MAX_PACKET_LENGTH 0x4000
 
 #include "qemu/sockets.h"
 #include "sysemu/hw_accel.h"
@@ -1128,6 +1129,7 @@ static int gdb_handle_packet(GDBState *s, const char *line_buf)
             p++;
         len = strtoull(p, NULL, 16);
 
+
         /* memtohex() doubles the required space */
         if (len > MAX_PACKET_LENGTH / 2) {
             put_packet (s, "E22");
@@ -1339,6 +1341,7 @@ static int gdb_handle_packet(GDBState *s, const char *line_buf)
             put_packet(s, buf);
             break;
         }
+	fprintf(stderr, "BLA : %s\n", p);
         if (strncmp(p, "Xfer:features:read:", 19) == 0) {
             const char *xml;
             target_ulong total_len;
